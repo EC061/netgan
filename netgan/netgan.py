@@ -8,7 +8,7 @@ Copyright (C) 2018
 Daniel Zügner
 Technical University of Munich
 """
-
+import os
 import tensorflow as tf
 from netgan import utils
 import time
@@ -105,7 +105,7 @@ class NetGAN:
 
         assert rw_len > 1, "Random walk length must be > 1."
 
-        tf.set_random_seed(seed)
+        tf.random.set_seed(seed)
 
         self.N = N
         self.rw_len = rw_len
@@ -113,24 +113,25 @@ class NetGAN:
         self.noise_dim = self.params['noise_dim']
         self.G_layers = self.params['Generator_Layers']
         self.D_layers = self.params['Discriminator_Layers']
-        self.tau = tf.placeholder(1.0 , shape=(), name="temperature")
+        tf.compat.v1.disable_eager_execution()
+        self.tau = tf.compat.v1.placeholder(1.0 , shape=(), name="temperature")
 
         # W_down and W_up for generator and discriminator
-        self.W_down_generator = tf.get_variable('Generator.W_Down',
-                                                shape=[self.N, self.params['W_Down_Generator_size']],
-                                                dtype=tf.float32,
-                                                initializer=tf.contrib.layers.xavier_initializer())
+        self.W_down_generator = tf.compat.v1.get_variable('Generator.W_Down',
+                                                              shape=[self.N, self.params['W_Down_Generator_size']],
+                                                              dtype=tf.float32,
+                                                              initializer=tf.initializers.GlorotUniform())
 
-        self.W_down_discriminator = tf.get_variable('Discriminator.W_Down',
+        self.W_down_discriminator = tf.compat.v1.get_variable('Discriminator.W_Down',
                                                     shape=[self.N, self.params['W_Down_Discriminator_size']],
                                                     dtype=tf.float32,
-                                                    initializer=tf.contrib.layers.xavier_initializer())
+                                                    initializer=tf.initializers.GlorotUniform())
 
-        self.W_up = tf.get_variable("Generator.W_up", shape = [self.G_layers[-1], self.N],
+        self.W_up = tf.compat.v1.get_variable("Generator.W_up", shape = [self.G_layers[-1], self.N],
                                     dtype=tf.float32,
-                                    initializer=tf.contrib.layers.xavier_initializer())
+                                    initializer=tf.initializers.GlorotUniform())
 
-        self.b_W_up = tf.get_variable("Generator.W_up_bias", dtype=tf.float32, initializer=tf.zeros_initializer,
+        self.b_W_up = tf.compat.v1.get_variable("Generator.W_up_bias", dtype=tf.float32, initializer=tf.zeros_initializer,
                                       shape=self.N)
 
         self.generator_function = self.generator_recurrent
@@ -144,7 +145,7 @@ class NetGAN:
         dataset = tf.data.Dataset.from_generator(walk_generator, tf.int32, [self.params['batch_size'], self.rw_len])
         #dataset_batch = dataset.prefetch(2).batch(self.params['batch_size'])
         dataset_batch = dataset.prefetch(100)
-        batch_iterator = dataset_batch.make_one_shot_iterator()
+        batch_iterator = tf.compat.v1.data.make_one_shot_iterator(dataset_batch)
         real_data = batch_iterator.get_next()
 
         self.real_inputs_discrete = real_data
@@ -157,7 +158,7 @@ class NetGAN:
         self.gen_cost = -tf.reduce_mean(self.disc_fake)
 
         # WGAN lipschitz-penalty
-        alpha = tf.random_uniform(
+        alpha = tf.random.uniform(
             shape=[self.params['batch_size'], 1, 1],
             minval=0.,
             maxval=1.
@@ -166,40 +167,42 @@ class NetGAN:
         self.differences = self.fake_inputs - self.real_inputs
         self.interpolates = self.real_inputs + (alpha * self.differences)
         self.gradients = tf.gradients(self.discriminator_function(self.interpolates, reuse=True), self.interpolates)[0]
-        self.slopes = tf.sqrt(tf.reduce_sum(tf.square(self.gradients), reduction_indices=[1, 2]))
+        self.slopes = tf.sqrt(tf.reduce_sum(tf.square(self.gradients), axis=[1, 2]))
         self.gradient_penalty = tf.reduce_mean((self.slopes - 1.) ** 2)
         self.disc_cost += self.params['Wasserstein_penalty'] * self.gradient_penalty
 
         # weight regularization; we omit W_down from regularization
-        self.disc_l2_loss = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+        self.disc_l2_loss = tf.add_n([ tf.nn.l2_loss(v) for v in tf.compat.v1.trainable_variables()
                                      if 'Disc' in v.name
                                      and not 'W_down' in v.name]) * self.params['l2_penalty_discriminator']
         self.disc_cost += self.disc_l2_loss
 
         # weight regularization; we omit  W_down from regularization
-        self.gen_l2_loss = tf.add_n([ tf.nn.l2_loss(v) for v in tf.trainable_variables()
+        self.gen_l2_loss = tf.add_n([ tf.nn.l2_loss(v) for v in tf.compat.v1.trainable_variables()
                                      if 'Gen' in v.name
                                      and not 'W_down' in v.name]) * self.params['l2_penalty_generator']
         self.gen_cost += self.gen_l2_loss
 
-        self.gen_params = [v for v in tf.trainable_variables() if 'Generator' in v.name]
-        self.disc_params = [v for v in tf.trainable_variables() if 'Discriminator' in v.name]
+        self.gen_params = [v for v in tf.compat.v1.trainable_variables() if 'Generator' in v.name]
+        self.disc_params = [v for v in tf.compat.v1.trainable_variables() if 'Discriminator' in v.name]
 
-        self.gen_train_op = tf.train.AdamOptimizer(learning_rate=self.params['learning_rate'], beta1=0.5,
+        self.gen_train_op = tf.compat.v1.train.AdamOptimizer(learning_rate=self.params['learning_rate'], beta1=0.5,
                                                    beta2=0.9).minimize(self.gen_cost, var_list=self.gen_params)
-        self.disc_train_op = tf.train.AdamOptimizer(learning_rate=self.params['learning_rate'], beta1=0.5,
+        self.disc_train_op = tf.compat.v1.train.AdamOptimizer(learning_rate=self.params['learning_rate'], beta1=0.5,
                                                     beta2=0.9).minimize(self.disc_cost, var_list=self.disc_params)
 
         if gpu_id is None:
-            config = tf.ConfigProto(
-                device_count={'GPU': 0}
-            )
+            # Configure CPU-only mode
+            os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
         else:
-            gpu_options = tf.GPUOptions(visible_device_list='{}'.format(gpu_id), allow_growth=True)
-            config = tf.ConfigProto(gpu_options=gpu_options)
+            # Configure specific GPU device
+            os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
 
-        self.session = tf.InteractiveSession(config=config)
-        self.init_op = tf.global_variables_initializer()
+        # Initialize global variables
+        self.init_op = tf.compat.v1.global_variables_initializer()
+
+        # Create a TensorFlow session
+        self.session = tf.compat.v1.Session()
 
 
     def generate_discrete(self, n_samples, reuse=True, z=None, gumbel=True, legacy=False):
@@ -252,14 +255,14 @@ class NetGAN:
 
         """
 
-        with tf.variable_scope('Generator') as scope:
+        with tf.compat.v1.variable_scope('Generator') as scope:
             if reuse is True:
                 scope.reuse_variables()
 
             def lstm_cell(lstm_size):
-                return tf.contrib.rnn.BasicLSTMCell(lstm_size, reuse=tf.get_variable_scope().reuse)
+                return tf.keras.layers.LSTMCell(lstm_size)
 
-            self.stacked_lstm = tf.contrib.rnn.MultiRNNCell([lstm_cell(size) for size in self.G_layers])
+            self.stacked_lstm = tf.keras.layers.StackedRNNCells([lstm_cell(size) for size in self.G_layers])
 
             # initial states h and c are randomly sampled for each lstm cell
             if z is None:
@@ -270,24 +273,24 @@ class NetGAN:
 
             # Noise preprocessing
             for ix,size in enumerate(self.G_layers):
-                if legacy: # old version to initialize LSTM. new version has less parameters and performs just as good.
-                    h_intermediate = tf.layers.dense(initial_states_noise, size, name="Generator.h_int_{}".format(ix+1),
-                                                     reuse=reuse, activation=tf.nn.tanh)
-                    h = tf.layers.dense(h_intermediate, size, name="Generator.h_{}".format(ix+1), reuse=reuse,
-                                        activation=tf.nn.tanh)
+                # if legacy: # old version to initialize LSTM. new version has less parameters and performs just as good.
+                #     h_intermediate = tf.layers.dense(initial_states_noise, size, name="Generator.h_int_{}".format(ix+1),
+                #                                      reuse=reuse, activation=tf.nn.tanh)
+                #     h = tf.layers.dense(h_intermediate, size, name="Generator.h_{}".format(ix+1), reuse=reuse,
+                #                         activation=tf.nn.tanh)
 
-                    c_intermediate = tf.layers.dense(initial_states_noise, size, name="Generator.c_int_{}".format(ix+1),
-                                                     reuse=reuse, activation=tf.nn.tanh)
-                    c = tf.layers.dense(c_intermediate, size, name="Generator.c_{}".format(ix+1), reuse=reuse,
-                                        activation=tf.nn.tanh)
+                #     c_intermediate = tf.layers.dense(initial_states_noise, size, name="Generator.c_int_{}".format(ix+1),
+                #                                      reuse=reuse, activation=tf.nn.tanh)
+                #     c = tf.layers.dense(c_intermediate, size, name="Generator.c_{}".format(ix+1), reuse=reuse,
+                #                         activation=tf.nn.tanh)
                     
-                else:
-                    intermediate = tf.layers.dense(initial_states_noise, size, name="Generator.int_{}".format(ix+1),
-                                                     reuse=reuse, activation=tf.nn.tanh)
-                    h = tf.layers.dense(intermediate, size, name="Generator.h_{}".format(ix+1), reuse=reuse,
-                                        activation=tf.nn.tanh)
-                    c = tf.layers.dense(intermediate, size, name="Generator.c_{}".format(ix+1), reuse=reuse,
-                                        activation=tf.nn.tanh)
+                # else:
+                intermediate = tf.keras.layers.Dense(size, activation=tf.nn.tanh, name="Generator.int_{}".format(ix+1),
+                                                    trainable=True)(initial_states_noise)
+                h = tf.keras.layers.Dense(size, activation=tf.nn.tanh, name="Generator.h_{}".format(ix+1), 
+                                        trainable=True)(intermediate)
+                c = tf.keras.layers.Dense(size, activation=tf.nn.tanh, name="Generator.c_{}".format(ix+1),
+                                        trainable=True)(intermediate)
                 initial_states.append((c, h))
 
             state = initial_states
@@ -297,7 +300,7 @@ class NetGAN:
             # LSTM tine steps
             for i in range(self.rw_len):
                 if i > 0:
-                    tf.get_variable_scope().reuse_variables()
+                    tf.compat.v1.get_variable_scope().reuse_variables()
 
                 # Get LSTM output
                 output, state = self.stacked_lstm.call(inputs, state)
@@ -335,7 +338,7 @@ class NetGAN:
 
         """
 
-        with tf.variable_scope('Discriminator') as scope:
+        with tf.compat.v1.variable_scope('Discriminator') as scope:
             if reuse == True:
                 scope.reuse_variables()
 
@@ -344,16 +347,16 @@ class NetGAN:
             output = tf.reshape(output, [-1, self.rw_len, int(self.W_down_discriminator.get_shape()[-1])])
 
             def lstm_cell(lstm_size):
-                return tf.contrib.rnn.BasicLSTMCell(lstm_size, reuse=tf.get_variable_scope().reuse)
+                return tf.keras.layers.LSTMCell(lstm_size)
 
-            disc_lstm_cell = tf.contrib.rnn.MultiRNNCell([lstm_cell(size) for size in self.D_layers])
+            disc_lstm_cell = tf.keras.layers.StackedRNNCells([lstm_cell(size) for size in self.D_layers])
 
-            output_disc, state_disc = tf.contrib.rnn.static_rnn(cell=disc_lstm_cell, inputs=tf.unstack(output, axis=1),
-                                                              dtype='float32')
+            rnn_layer = tf.keras.layers.RNN(cell=disc_lstm_cell, return_sequences=True, return_state=True)
+            output_disc, state_disc = rnn_layer(output)
 
             last_output = output_disc[-1]
 
-            final_score = tf.layers.dense(last_output, 1, reuse=reuse, name="Discriminator.Out")
+            final_score = tf.keras.layers.Dense(1, name="Discriminator.Out")(last_output)
             return final_score
 
     def train(self, A_orig, val_ones, val_zeros,  max_iters=50000, stopping=None, eval_transitions=15e6,
@@ -450,7 +453,7 @@ class NetGAN:
         temperature = self.params['temp_start']
 
         starting_time = time.time()
-        saver = tf.train.Saver()
+        saver = tf.compat.v1.train.Saver()
 
         transitions_per_walk = self.rw_len - 1
         # Sample lots of random walks, used for evaluation of model.
@@ -572,9 +575,9 @@ def make_noise(shape, type="Gaussian"):
     """
 
     if type == "Gaussian":
-        noise = tf.random_normal(shape)
+        noise = tf.random.normal(shape)
     elif type == 'Uniform':
-        noise = tf.random_uniform(shape, minval=-1, maxval=1)
+        noise = tf.random.uniform(shape, minval=-1, maxval=1)
     else:
         print("ERROR: Noise type {} not supported".format(type))
     return noise
@@ -595,8 +598,8 @@ def sample_gumbel(shape, eps=1e-20):
 
     """
     """Sample from Gumbel(0, 1)"""
-    U = tf.random_uniform(shape, minval=0, maxval=1)
-    return -tf.log(-tf.log(U + eps) + eps)
+    U = tf.random.uniform(shape, minval=0, maxval=1)
+    return -tf.math.log(-tf.math.log(U + eps) + eps)
 
 
 def gumbel_softmax_sample(logits, temperature):
